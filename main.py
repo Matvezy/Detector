@@ -2,7 +2,7 @@ import os
 import sys
 import cv2
 import pickle
-
+import numpy as np
 import logging as log
 
 from numpy import dot
@@ -17,11 +17,11 @@ from PyQt5.QtWidgets import QMainWindow, QWidget, QPushButton, QVBoxLayout
 from PyQt5.QtGui import QImage
 from PyQt5.QtCore import Qt
 from pyqtgraph import ImageView
+from gui import MainWindow, ImageWidget
 
 class GUI(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.changePixmap = pyqtSignal(QImage)
         self.central_widget = QWidget()
         self.image_view = ImageView()
 
@@ -31,17 +31,12 @@ class GUI(QMainWindow):
 
     def update_image(self, frame):
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = frame.shape
-        bytesPerLine = ch * w
-        convertToQtFormat = QImage(frame.data, w, h, bytesPerLine, QImage.Format_RGB888)
-        frame = convertToQtFormat.scaled(640, 480, Qt.KeepAspectRatio)
         self.image_view.setImage(frame.T)
 
 # Global variables
 TARGET_DEVICE = 'CPU'
 accepted_devices = ['CPU', 'GPU', 'MYRIAD', 'HETERO:FPGA,CPU', 'HDDL']
 is_async_mode = True
-CONFIG_FILE = '../resources/config.json'
 
 # Flag to control background thread
 KEEP_RUNNING = True
@@ -52,6 +47,7 @@ DELAY = 5
 MyStruct = namedtuple("assemblyinfo", "safe")
 INFO = MyStruct(True)
 
+selected_areas={}
 
 def build_argparser():
     """
@@ -88,6 +84,7 @@ def build_argparser():
     if args.device:
         TARGET_DEVICE = args.device
     return parser
+
 
 def check_args():
     # ArgumentParser checks the device
@@ -271,6 +268,9 @@ def main(gui):
                                 infer_network=detect_network, cur_request_id=cur_request_id)
 
     selected_region=None
+
+    gui.start()
+
     while cap.isOpened():
         flag, frame = cap.read()
         if not flag:
@@ -279,10 +279,19 @@ def main(gui):
         key_pressed = cv2.waitKey(1)
         if result is not None:
             cur_request_id = 0
-            if key_pressed == 99:
+            if key_pressed == 99 or gui.change == True:
+                if len(selected_areas) != 0:
+                    for key in selected_areas.keys():
+                        cords = selected_areas[key]
+                        #color = tuple(np.random.choice(range(256), size=3))
+                        #print(color)
+                        cv2.rectangle(frame, (cords[0], cords[1]),
+                            (cords[0] + cords[2], cords[1] + cords[3]), (0, 0, 255), 2)
+                        cv2.putText(frame, key, (int((cords[0]+cords[2])/2), int((cords[1]+cords[3])/2)), cv2.FONT_HERSHEY_COMPLEX, 1, (0, 0, 255))
                 # Give operator chance to change the area
                 # Select rectangle from left upper corner, dont display crosshair
-                ROI = cv2.selectROI("Assembly Selection", frame, True, False)
+                # SUPER NOTEs make user able to exit
+                ROI = cv2.selectROI("Choose the area", frame, True, False)
                 print("Assembly Area Selection: -x = {}, -y = {}, -w = {}, -h = {}".format(ROI[0], ROI[1], ROI[2], ROI[3]))
                 roi_x = ROI[0]
                 roi_y = ROI[1]
@@ -293,13 +302,12 @@ def main(gui):
                 cv2.rectangle(frame, (roi_x, roi_y),
                       (roi_x + roi_w, roi_y + roi_h), (0, 0, 255), 2)
                 selected_region = [roi_x, roi_y, roi_w, roi_h]
-
+                gui.change = False
+                selected_areas[gui.area_name] = selected_region
             frame = ssd_out(frame, result, known_figures, reidentifier_f, names, selected_region)
-            cv2.imshow('Observing',frame)
-            if cv2.waitKey(25) & 0xFF == ord('q'):
+            gui.grab_images(frame)
+            if cv2.waitKey(25) & 0xFF == ord('q') or gui.close_inf == True:
                 break
-        gui.update_image(frame)
-
         if single_image_mode:
             cv2.imwrite('output_image.jpg', frame)
     cap.release()
@@ -309,9 +317,9 @@ def main(gui):
 
 
 if __name__ == '__main__':
-    app = QApplication([])
-    gui = GUI()
+    app = QApplication(sys.argv)
+    gui = MainWindow()
     gui.show()
     main(gui)
-    app.exit(app.exec_())
+    print('done')
     exit(0)
