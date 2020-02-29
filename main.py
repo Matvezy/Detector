@@ -4,7 +4,8 @@ import cv2
 import pickle
 import numpy as np
 import logging as log
-
+import time
+import csv
 from numpy import dot
 from numpy.linalg import norm
 from argparse import ArgumentParser
@@ -18,20 +19,8 @@ from PyQt5.QtGui import QImage
 from PyQt5.QtCore import Qt
 from pyqtgraph import ImageView
 from gui import MainWindow, ImageWidget
-
-class GUI(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.central_widget = QWidget()
-        self.image_view = ImageView()
-
-        self.layout = QVBoxLayout(self.central_widget)
-        self.layout.addWidget(self.image_view)
-        self.setCentralWidget(self.central_widget)
-
-    def update_image(self, frame):
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        self.image_view.setImage(frame.T)
+from person import Person
+import pandas as pd
 
 # Global variables
 TARGET_DEVICE = 'CPU'
@@ -43,11 +32,8 @@ KEEP_RUNNING = True
 
 DELAY = 5
 
-# Assemblyinfo contains information about assembly area
-MyStruct = namedtuple("assemblyinfo", "safe")
-INFO = MyStruct(True)
-
 selected_areas={}
+people=[]
 
 def build_argparser():
     """
@@ -117,7 +103,7 @@ def performance_counts(perf_count):
                                                           stats['real_time']))
 
 
-def ssd_out(frame, result, known_figures, reidentifier, names, selected_region):
+def ssd_out(frame, result, known_figures, reidentifier, names, selected_areas, del_time):
     """
     Parse SSD output.
 
@@ -125,10 +111,12 @@ def ssd_out(frame, result, known_figures, reidentifier, names, selected_region):
     :param result: list contains the data to parse ssd
     :return: person count and frame
     """
-    global INFO
+    global people
     person = []
-    INFO = INFO._replace(safe=True)
-
+    ischanged = False
+    best_name=''
+    best_val=0
+    drawn = False
     for obj in result[0][0]:
         # Draw bounding box for object when it's probability is more than
         #  the specified threshold
@@ -138,38 +126,12 @@ def ssd_out(frame, result, known_figures, reidentifier, names, selected_region):
             xmax = int(obj[5] * initial_w)
             ymax = int(obj[6] * initial_h)
             person.append([xmin, ymin, xmax, ymax])
-            if selected_region is not None:
-                #check the area where person is
-                for p in person:
-                    # area_of_person gives area of the detected person
-                    area_of_person = (p[2] - p[0]) * (p[3] - p[1])
-                    x_max = max(p[0], selected_region[0])
-                    x_min = min(p[2], selected_region[0] + selected_region[2])
-                    y_min = min(p[3], selected_region[1] + selected_region[3])
-                    y_max = max(p[1], selected_region[1])
-                    point_x = x_min - x_max
-                    point_y = y_min - y_max
-                    # area_of_intersection gives area of intersection of the
-                    # detected person and the selected area
-                    area_of_intersection = point_x * point_y
-                    if point_x < 0 or point_y < 0:
-                        continue
-                    else:
-                        if area_of_person > area_of_intersection:
-                            # assembly line area flags
-                            INFO = INFO._replace(safe=True)
-                        else:
-                            # assembly line area flags
-                            INFO = INFO._replace(safe=False)
-            
             #Recognize person            
             if len(known_figures)>0:
                 crop_img = frame[ymin:ymax, xmin:xmax]
                 #Get the object blob
                 detected = reidentifier.reidentify_single(crop_img)
                 if detected is not None:
-                    best_name=''
-                    best_val=0
                     for name in names:
                         params=known_figures[name]
                         for param in params:
@@ -179,18 +141,43 @@ def ssd_out(frame, result, known_figures, reidentifier, names, selected_region):
                                 best_val = cos_sim
                                 if best_name != name:
                                     best_name = name
-                    if best_val>0.7:
+                    if best_val>0.7 and not drawn:
                         cv2.rectangle(frame, (xmin, ymin+10), (xmax, ymax), (148, 0, 211), 3)
                         cv2.putText(frame, best_name, (xmin, ymin), cv2.FONT_HERSHEY_COMPLEX, 0.5, (148, 0, 211))
-                        if INFO.safe == False:
-                            warning = best_name+" is in a working area."
-                            cv2.putText(frame, warning, (15, 100), cv2.FONT_HERSHEY_COMPLEX, 0.7, (0, 0, 255), 2)
-                        return frame      
-            cv2.putText(frame, 'Unknown', (xmin, ymin-10), cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 55, 255))
-            cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (0, 55, 255), 3)
-            if INFO.safe == False:
-                cv2.putText(frame, "Unknown person is in a working area.", (15, 100), cv2.FONT_HERSHEY_COMPLEX, 0.7, (0, 0, 255), 2)       
-        return frame
+                        drawn = True   
+            if not drawn:
+                cv2.putText(frame, 'Unknown', (xmin, ymin-10), cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 55, 255))
+                cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (0, 55, 255), 3) 
+
+            if len(selected_areas) > 0:
+                #check the area where person is
+                for p in person:
+                    # area_of_person gives area of the detected person
+                    area_of_person = (p[2] - p[0]) * (p[3] - p[1])
+                    for key in selected_areas:
+                        selected_region = selected_areas[key]
+                        x_max = max(p[0], selected_region[0])
+                        x_min = min(p[2], selected_region[0] + selected_region[2])
+                        y_min = min(p[3], selected_region[1] + selected_region[3])
+                        y_max = max(p[1], selected_region[1])
+                        point_x = x_min - x_max
+                        point_y = y_min - y_max
+                        # area_of_intersection gives area of intersection of the
+                        # detected person and the selected area
+                        area_of_intersection = point_x * point_y
+                        if point_x < 0 or point_y < 0:
+                            continue
+                        else:
+                            if area_of_person <= area_of_intersection:
+                                if drawn:
+                                    for person in people:
+                                        if person.name == best_name:
+                                            if person.__dict__[key+'_time'] != 0: 
+                                                person.__dict__[key+'_time'] += del_time
+                                            else:
+                                                person.__dict__[key+'_time'] += 0.01
+                                            ischanged = True
+    return frame, ischanged
     
 
 def main(gui):
@@ -204,6 +191,7 @@ def main(gui):
     global KEEP_RUNNING
     global TARGET_DEVICE
     global is_async_mode
+    global people
 
     args = build_argparser().parse_args()
     check_args()
@@ -242,6 +230,7 @@ def main(gui):
     prob_threshold = args.prob_threshold
     initial_w = cap.get(3)
     initial_h = cap.get(4)
+    fps = cap.get(cv2.CAP_PROP_FPS)  
 
     reidentifier_f = Reidentifier(reidentifier=args.reidentificator, folder=args.k_figures, device=args.device,
                                         ext=args.cpu_extension, infer_network=reid_network) 
@@ -253,28 +242,42 @@ def main(gui):
            known_figures = pickle.load(f)
         with open(r'pickles\names.pkl', 'rb') as f:
            names = pickle.load(f)
-                                                                                        #add the upgrade for pickles from gui
+                                                                                        #SUPER NOTES add the upgrade for pickles from gui
     else:
         known_figures, names = reidentifier_f.reidentify_fldr()
         with open(r'pickles\known_figures.pkl', 'wb') as f:
             pickle.dump(known_figures, f)
         with open(r'pickles\names.pkl', 'wb') as f:
             pickle.dump(names, f)
-    
+
     cur_request_id = 0
+ 
+    # read csv file
+    df = pd.read_csv(r"pickles\time.csv")
+    keys = list(df.keys())   
+    for i in range(1, len(keys)):
+        argum = {}
+        for j in range(len(df)):
+            argum[df['area_name'][j]+'_time'] = df[keys[i]][j]
+        per = Person(name=keys[i],**argum)
+        people.append(per)
 
 
     detector = Detector(detector=args.detector, device=args.device, ext=args.cpu_extension, 
                                 infer_network=detect_network, cur_request_id=cur_request_id)
 
-    selected_region=None
+    selected_region = None
 
-    gui.start()
+    gui.start(people)
+    ttl_frames = 0
+    prev_time = 0
+    del_time = 0
 
     while cap.isOpened():
         flag, frame = cap.read()
         if not flag:
             break
+        ttl_frames += 1
         result = detector.detect(frame)
         key_pressed = cv2.waitKey(1)
         if result is not None:
@@ -304,22 +307,51 @@ def main(gui):
                 selected_region = [roi_x, roi_y, roi_w, roi_h]
                 gui.change = False
                 selected_areas[gui.area_name] = selected_region
-            frame = ssd_out(frame, result, known_figures, reidentifier_f, names, selected_region)
+
+            ttl_time = ttl_frames/fps
+            del_time = ttl_time - prev_time
+            
+            frame, changed = ssd_out(frame, result, known_figures, reidentifier_f, names, selected_areas, del_time)
+            
+            prev_time = ttl_time
+            #update pickles data
+            if len(gui.new_person) == 2:
+                names.append(gui.new_person[0])
+                items = []
+                for image in gui.new_person[1]:
+                    shape_img = cv2.imread(image)
+                    shape_img = reidentifier_f.reidentify_single(shape_img)
+                    items.append(shape_img)
+                known_figures[gui.new_person[0]] = tuple(items)
+                with open(r'pickles\known_figures.pkl', 'wb') as f:
+                    pickle.dump(known_figures, f)
+                with open(r'pickles\names.pkl', 'wb') as f:
+                    pickle.dump(names, f)
+                print(known_figures)
+                gui.new_person = []
+
+            if changed:
+                gui.update_people(people)
+                #update and push changes to csv file   
+                df1 = pd.read_csv(r"pickles\time.csv")   
+                for person in people:
+                    for count in range(0,len(df1)):
+                        df1[person.name][count] = list(person.__dict__.values())[count+1]
+                    df1.to_csv(r'C:\Users\Mat\Desktop\people-counter-python-master\time.csv')
             gui.grab_images(frame)
             if cv2.waitKey(25) & 0xFF == ord('q') or gui.close_inf == True:
                 break
         if single_image_mode:
             cv2.imwrite('output_image.jpg', frame)
     cap.release()
-    cv2.destroyAllWindows()
     detect_network.clean()
     reid_network.clean()
 
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
+    app.setStyle('Fusion')
     gui = MainWindow()
     gui.show()
     main(gui)
-    print('done')
     exit(0)

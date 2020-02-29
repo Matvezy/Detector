@@ -8,7 +8,7 @@ import sys, time, threading, cv2
 from PyQt5.QtCore import Qt
 from PyQt5.QtCore import QTimer, QPoint, pyqtSignal
 from PyQt5.QtWidgets import QApplication, QMainWindow, QTextEdit, QLabel, QPushButton
-from PyQt5.QtWidgets import QWidget, QAction, QVBoxLayout, QHBoxLayout, QDesktopWidget, QInputDialog
+from PyQt5.QtWidgets import QWidget, QAction, QVBoxLayout, QHBoxLayout, QDesktopWidget, QInputDialog, QLineEdit
 from PyQt5.QtGui import QFont, QPainter, QImage, QTextCursor, QLineEdit
 import queue as Queue
 
@@ -53,29 +53,27 @@ class MainWindow(QMainWindow):
         self.close_inf = False
         self.image_queue = Queue.Queue() 
         self.central = QWidget(self)
-        self.textbox = QTextEdit(self.central)
-        self.textbox.setFont(TEXT_FONT)
-        self.textbox.setMinimumSize(600, 100)
-        self.text_update.connect(self.append_text)
-        sys.stdout = self
-        print("Camera number %u" % camera_num)
-        print("Image size %u x %u" % IMG_SIZE)
-        if DISP_SCALE > 1:
-            print("Display scale %u:1" % DISP_SCALE)
+        self.trackw = None
         self.frame_c = None
-        self.vlayout = QVBoxLayout()        # Window layout
+        self.vlayout = QVBoxLayout()      
         self.displays = QHBoxLayout()
+        self.buttons = QHBoxLayout()
+        self.set_button = QPushButton('Set Area')
+        self.cp_button = QPushButton('See current presence')
         self.disp = ImageWidget(self)    
         self.displays.addWidget(self.disp)
+        self.buttons.addWidget(self.set_button)
+        self.buttons.addWidget(self.cp_button)
         self.vlayout.addLayout(self.displays)
+        self.vlayout.addLayout(self.buttons)
         self.label = QLabel(self)
         self.vlayout.addWidget(self.label)
-        self.vlayout.addWidget(self.textbox)
         self.central.setLayout(self.vlayout)
         self.setCentralWidget(self.central)
         self.area_name = ''
-        self.trackw = TrackWindow()
-        self.mainMenu = self.menuBar()      # Menu bar
+        self.mainMenu = self.menuBar()  
+        self.new_person = [] 
+        self.setWindowTitle("Surveillance in progress")  
         exitAction = QAction('&Exit', self)
         exitAction.setShortcut('Ctrl+Q')
         exitAction.triggered.connect(self.close)
@@ -89,19 +87,26 @@ class MainWindow(QMainWindow):
         self.fileMenu.addAction(exitAction)
         self.fileMenu.addAction(setAction)
         self.fileMenu.addAction(currentPresence)
+        self.set_button.clicked.connect(self.change_window)
+        self.cp_button.clicked.connect(self.track_presence)
 
     # Start image capture & display
-    def start(self):
-        self.timer = QTimer(self)           # Timer to trigger display
+    def start(self, people):
+        self.timer = QTimer(self)           
         self.timer.timeout.connect(lambda: 
                     self.show_image(self.image_queue, self.disp, DISP_SCALE))
         self.timer.start(DISP_MSEC) 
+        self.trackw = TrackWindow(people)
+
     def grab_images(self, frame):
         if frame is not None and self.image_queue.qsize() < 2:
             self.image_queue.put(frame)
             self.frame_c = frame
         else:
             time.sleep(DISP_MSEC / 1000.0)
+        if len(self.trackw.result) == 2:
+            self.new_person = self.trackw.result[:]
+            self.trackw.result = []
 
     # Fetch camera image from queue, and display it
     def show_image(self, imageq, display, scale):
@@ -122,30 +127,12 @@ class MainWindow(QMainWindow):
                       disp_bpl, IMG_FORMAT)
         display.setImage(qimg)
 
-    # Handle sys.stdout.write: update text display
-    def write(self, text):
-        self.text_update.emit(str(text))
-    def flush(self):
-        pass
-
-    # Append to text display
-    def append_text(self, text):
-        cur = self.textbox.textCursor()     # Move cursor to end of text
-        cur.movePosition(QTextCursor.End) 
-        s = str(text)
-        while s:
-            head,sep,s = s.partition("\n")  # Split line at LF
-            cur.insertText(head)            # Insert text at cursor
-            if sep:                         # New line if LF
-                cur.insertBlock()
-        self.textbox.setTextCursor(cur)     # Update visible cursor
-
+    # Add area
     def change_window(self, event):
-        text, okPressed = QInputDialog.getText(self, "Enter the name for the Area","Name of the area:")
+        text, okPressed = QInputDialog.getText(self, "Area","Name of the area:", QLineEdit.Normal, "")
         if okPressed and text != '':
             self.change = True
             self.area_name = text
-
 
     def closeEvent(self, event):
         self.close_inf = True 
@@ -153,20 +140,66 @@ class MainWindow(QMainWindow):
     
     def track_presence(self):
         self.trackw.show()
-        
-class TrackWindow(QMainWindow):
 
-    def __init__(self):
+    def update_people(self, ppl):
+        self.trackw.people = ppl
+        self.trackw.update_stats()
+
+class TrackWindow(QMainWindow):
+    def __init__(self, people):
         super().__init__()
+        self.people = people
+        self.setWindowTitle("Tracking stats")  
+        self.result = []
         self.central = QWidget(self)
-        self.vlayout = QVBoxLayout()        # Window layout
-        self.label = QLabel(self)
+        self.vlayout = QVBoxLayout()        
+        for person in self.people:
+            ind = self.people.index(person)
+            setattr(self, 'button'+str(ind), QVBoxLayout())
+            if ind%2 == 0:
+                 setattr(self, 'buttons'+str(ind), QHBoxLayout())
+            for key, value in person.__dict__.items():
+                setattr(self, key+str(ind), QLabel(self))
+                parametr = getattr(self, key+str(ind))
+                if key  != 'name':
+                    parametr.setText(key+' time: '+str(int(value))) 
+                else:
+                    parametr.setText(str(value))
+                but_ind = getattr(self, 'button'+str(ind))
+                but_ind.addWidget(parametr)
+                if ind%2 == 0:
+                    box_lay = getattr(self, 'buttons'+str(ind))
+                else:
+                    box_lay = getattr(self, 'buttons'+str(ind-1))
+                box_lay.addLayout(but_ind)
+                self.vlayout.addLayout(box_lay)
+
         self.add_button = QPushButton('Add new workers')
-        self.vlayout.addWidget(self.label)
-        self.add_button.setMinimumSize(600, 50)
+        self.add_button.setMinimumSize(int((QDesktopWidget().screenGeometry(-1).width())/4), int((QDesktopWidget().screenGeometry(-1).height())/15))
         self.vlayout.addWidget(self.add_button)
         self.central.setLayout(self.vlayout)
         self.setCentralWidget(self.central)
-        self.add_button.clicked.connect(self.on_click)
-    def on_click(self):
-        pass
+        self.add_button.clicked.connect(self.add_person)
+
+    def add_person(self):
+        name_person, okPressed = QInputDialog.getText(self, "Name","Name of a person:",QLineEdit.Normal, "")
+        if okPressed and name_person != '':
+            self.result.append(name_person)
+            values = []
+            pic = QInputDialog(self)
+            print(pic.cancelButtonText)
+            picture, ok = pic.getText(self, "Enter the picture directory","Picture directory:",QLineEdit.Normal, "")
+            while ok and picture != '':
+                values.append(picture)
+                picture, ok = pic.getText(self, "Enter the picture directory","Picture directory:",QLineEdit.Normal, "")
+            self.result.append(values)
+    
+    def update_stats(self):
+        for person in self.people:
+            ind = str(self.people.index(person))
+            for key, value in person.__dict__.items():
+                parametr = getattr(self, key+ind)
+                if key  != 'name':
+                    parametr.setText(key+' time: '+str(int(value))) 
+
+            
