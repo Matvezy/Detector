@@ -1,6 +1,5 @@
 import os
 import cv2
-import numpy as np
 
 class Reidentifier:
 
@@ -20,10 +19,10 @@ class Reidentifier:
         for fldr in os.listdir(self.folder):
             inter=[]
             for filename in os.listdir(self.folder+chr(92)+fldr):
-                if filename.endswith(".jpg") or filename.endswith(".png"): 
+                if filename.endswith(".jpg") or filename.endswith(".png"):
                     im=cv2.imread(self.folder+chr(92)+fldr+chr(92)+filename)
                     inter.append(self.reidentify_single(im))
-            known_figures[fldr]=tuple(inter)
+            known_figures[fldr] = inter
             names.append(fldr.split('.')[0])
         self.cur_request_id = 0
         return known_figures, names
